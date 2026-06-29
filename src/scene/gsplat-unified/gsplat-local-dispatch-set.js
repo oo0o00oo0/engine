@@ -133,6 +133,17 @@ class GSplatLocalDispatchSet {
     pickDepthTexture = null;
 
     /**
+     * Pick mode: render-address output (r32uint). Stores the work-buffer pixel index
+     * (splatId) of the front-most above-threshold splat at each screen pixel. This is
+     * the generic render address; it does not carry component or application identity.
+     * CPU-side resolution via GSplatManager.resolveRenderAddress maps splatId to
+     * { fileIndex, localSplatIndex, lodLevel }.
+     *
+     * @type {Texture|null}
+     */
+    renderAddrTexture = null;
+
+    /**
      * @param {GraphicsDevice} device - The graphics device.
      * @param {boolean} pickMode - Whether this set is for picking.
      */
@@ -162,6 +173,16 @@ class GSplatLocalDispatchSet {
                 magFilter: FILTER_NEAREST,
                 storage: true
             });
+            this.renderAddrTexture = new Texture(device, {
+                name: 'GSplatLocalRenderAddr',
+                width: 4,
+                height: 4,
+                format: PIXELFORMAT_R32U,
+                mipmaps: false,
+                minFilter: FILTER_NEAREST,
+                magFilter: FILTER_NEAREST,
+                storage: true
+            });
         } else {
             this.outputTexture = new Texture(device, {
                 name: 'GSplatLocalComputeOutput',
@@ -186,6 +207,7 @@ class GSplatLocalDispatchSet {
         if (this.pickMode) {
             this.pickIdTexture?.resize(width, height);
             this.pickDepthTexture?.resize(width, height);
+            this.renderAddrTexture?.resize(width, height);
         } else {
             this.outputTexture?.resize(width, height);
         }
@@ -344,7 +366,8 @@ class GSplatLocalDispatchSet {
 
         const outputBindings = pickMode ? [
             new BindStorageTextureFormat('pickIdTexture', PIXELFORMAT_R32U),
-            new BindStorageTextureFormat('pickDepthTexture', PIXELFORMAT_RGBA16F)
+            new BindStorageTextureFormat('pickDepthTexture', PIXELFORMAT_RGBA16F),
+            new BindStorageTextureFormat('renderAddrTexture', PIXELFORMAT_R32U)
         ] : [
             new BindStorageTextureFormat('outputTexture', PIXELFORMAT_RGBA16F)
         ];
@@ -410,6 +433,7 @@ class GSplatLocalDispatchSet {
         this.outputTexture?.destroy();
         this.pickIdTexture?.destroy();
         this.pickDepthTexture?.destroy();
+        this.renderAddrTexture?.destroy();
     }
 }
 

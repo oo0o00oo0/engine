@@ -580,9 +580,10 @@ class GSplatComputeLocalRenderer extends GSplatRenderer {
      * @param {object} cam - The camera.
      * @param {number} width - Pick target width.
      * @param {number} height - Pick target height.
+     * @param {number} alphaClip - Fragment alpha threshold for this pick pass.
      * @returns {MeshInstance|null} The pick mesh instance ready for the picker's render list.
      */
-    dispatchPick(cam, width, height) {
+    dispatchPick(cam, width, height, alphaClip = this._alphaClip) {
         if (!this._pickSet) {
             this._pickSet = this._createDispatchSet(true);
         }
@@ -590,13 +591,26 @@ class GSplatComputeLocalRenderer extends GSplatRenderer {
         const set = this._pickSet;
         set.resizeOutputTextures(width, height);
 
-        this._dispatchPipeline(set, width, height, true);
+        this._dispatchPipeline(set, width, height, true, alphaClip);
+
+        // Store the render-address texture reference so GSplatManager can expose
+        // resolveRenderAddress to application code after a pick dispatch.
+        this.lastRenderAddrTexture = set.renderAddrTexture;
 
         return this.tileComposite.prepareForPicking(
             this._lastDrawSlot, set.pickIdTexture, set.pickDepthTexture,
             set._rasterizeTileListBuffer, this._lastNumTilesX, width, height
         );
     }
+
+    /**
+     * The render-address texture from the most recent pick dispatch. r32uint; each pixel
+     * stores the work-buffer pixel index (splatId) of the front-most above-threshold splat.
+     * Valid after a dispatchPick call; null before the first pick dispatch.
+     *
+     * @type {import('../../platform/graphics/texture.js').Texture|null}
+     */
+    lastRenderAddrTexture = null;
 
     /** @type {number} */
     _lastDrawSlot = 0;
@@ -613,7 +627,7 @@ class GSplatComputeLocalRenderer extends GSplatRenderer {
      * @param {boolean} pickMode - Whether this is a pick dispatch.
      * @private
      */
-    _dispatchPipeline(set, width, height, pickMode) {
+    _dispatchPipeline(set, width, height, pickMode, pickAlphaClip) {
         const numSplats = this._numSplats;
         if (!this._compactedSplatIds || !this._sortElementCountBuffer || numSplats === 0) return;
 
@@ -646,7 +660,7 @@ class GSplatComputeLocalRenderer extends GSplatRenderer {
         _viewData.set(view.data);
         const focal = width * proj.data[0];
 
-        const alphaClip = pickMode ? this._alphaClip : (1.0 / 255.0);
+        const alphaClip = pickMode ? (pickAlphaClip ?? this._alphaClip) : (1.0 / 255.0);
 
         // Ensure fisheyeProj is up-to-date (culling may not have run this frame)
         this.fisheyeProj.update(this._fisheye, camera.fov, proj);
@@ -876,6 +890,7 @@ class GSplatComputeLocalRenderer extends GSplatRenderer {
         if (pickMode) {
             rasterizeCompute.setParameter('pickIdTexture', set.pickIdTexture);
             rasterizeCompute.setParameter('pickDepthTexture', set.pickDepthTexture);
+            rasterizeCompute.setParameter('renderAddrTexture', set.renderAddrTexture);
         } else {
             rasterizeCompute.setParameter('outputTexture', set.outputTexture);
             if (useDepth) {

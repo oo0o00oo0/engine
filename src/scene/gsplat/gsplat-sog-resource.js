@@ -1,5 +1,6 @@
 import { Debug } from '../../core/debug.js';
 import { PIXELFORMAT_RGBA8, PIXELFORMAT_RGBA32F } from '../../platform/graphics/constants.js';
+import { Texture } from '../../platform/graphics/texture.js';
 import { GSplatResourceBase } from './gsplat-resource-base.js';
 import { GSplatFormat } from './gsplat-format.js';
 
@@ -8,6 +9,8 @@ import { GSplatFormat } from './gsplat-format.js';
  */
 
 class GSplatSogResource extends GSplatResourceBase {
+    _fallbackFeatureColor = null;
+
     constructor(device, gsplatData) {
         super(device, gsplatData);
 
@@ -39,6 +42,16 @@ class GSplatSogResource extends GSplatResourceBase {
             Debug.assert(gsplatData.codebookTexture, 'GSplatSogResource: V2 asset is missing codebookTexture - prepareCodebook() must be called first.');
             this.streams.textures.set('sogCodebook', gsplatData.codebookTexture);
         }
+        const featureColor = gsplatData.featureColor ?? new Texture(device, {
+            name: 'featureColorFallback',
+            width: 1,
+            height: 1,
+            format: PIXELFORMAT_RGBA8,
+            mipmaps: false,
+            levels: [new Uint8Array([255, 255, 255, 255])]
+        });
+        this._fallbackFeatureColor = gsplatData.featureColor ? null : featureColor;
+        this.streams.textures.set('featureColor', featureColor);
 
         // declare streams matching the registered textures; formats drive generated uniform
         // declarations and load functions for the read shader chunk
@@ -79,6 +92,9 @@ class GSplatSogResource extends GSplatResourceBase {
         this.streams.textures.delete('sh_labels');
         this.streams.textures.delete('sh_centroids');
         this.streams.textures.delete('sogCodebook');
+        this.streams.textures.delete('featureColor');
+        this._fallbackFeatureColor?.destroy();
+        this._fallbackFeatureColor = null;
         /** @type {GSplatSogData} */ (this.gsplatData).destroy();
         super._actualDestroy();
     }

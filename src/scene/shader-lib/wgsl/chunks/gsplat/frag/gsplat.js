@@ -25,7 +25,7 @@ fn normExp(x: half) -> half {
 varying gaussianUV: half2;
 varying gaussianColor: half4;
 
-#if defined(GSPLAT_UNIFIED_ID) && defined(PICK_PASS)
+#if (defined(GSPLAT_UNIFIED_ID) || defined(GSPLAT_RENDER_ADDR_PASS)) && defined(PICK_PASS)
     varying @interpolate(flat) vPickId: u32;
 #endif
 
@@ -55,8 +55,9 @@ fn fragmentMain(input: FragmentInput) -> FragmentOutput {
 
     #ifdef PICK_PASS
 
-        #ifdef GSPLAT_UNIFIED_ID
-            // Use component ID from work buffer (passed via varying)
+        #if defined(GSPLAT_UNIFIED_ID) || defined(GSPLAT_RENDER_ADDR_PASS)
+            // Use the ID passed via varying: component pcId (GSPLAT_UNIFIED_ID) or
+            // the work-buffer render address (GSPLAT_RENDER_ADDR_PASS).
             output.color = encodePickOutput(vPickId);
         #else
             // Use standard meshInstanceId path

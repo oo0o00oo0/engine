@@ -1,12 +1,16 @@
-import { SEMANTIC_POSITION, CULLFACE_NONE, PIXELFORMAT_RGBA16U } from '../../platform/graphics/constants.js';
+import { SEMANTIC_POSITION, CULLFACE_NONE, PIXELFORMAT_RGBA16U, PIXELFORMAT_RGBA8, FILTER_NEAREST } from '../../platform/graphics/constants.js';
 import {
     BLEND_NONE, BLEND_PREMULTIPLIED, BLEND_ADDITIVE, GSPLAT_FORWARD, GSPLAT_SHADOW,
-    SHADOWCAMERA_NAME
+    SHADOWCAMERA_NAME, SHADER_PICK
 } from '../constants.js';
 import { ShaderMaterial } from '../materials/shader-material.js';
 import { GSplatResourceBase } from '../gsplat/gsplat-resource-base.js';
 import { MeshInstance } from '../mesh-instance.js';
 import { GSplatRenderer } from './gsplat-renderer.js';
+import { Texture } from '../../platform/graphics/texture.js';
+import { RenderTarget } from '../../platform/graphics/render-target.js';
+import { Color } from '../../core/math/color.js';
+import { RenderPassGSplatRasterPick } from './render-pass-gsplat-raster-pick.js';
 
 /**
  * @import { StorageBuffer } from '../../platform/graphics/storage-buffer.js'
@@ -15,6 +19,8 @@ import { GSplatRenderer } from './gsplat-renderer.js';
  * @import { Layer } from '../layer.js'
  * @import { GSplatWorkBuffer } from './gsplat-work-buffer.js'
  */
+
+const _pickClearColor = new Color(1, 1, 1, 1);
 
 /**
  * Renders splats from the work buffer using instanced quad rendering.
@@ -39,6 +45,60 @@ class GSplatQuadRenderer extends GSplatRenderer {
 
     /** @private */
     _lastFisheyeEnabled = false;
+
+    /**
+     * Forward renderer reference used to execute the render-address pick pass. Threaded in
+     * from the manager (director.renderer) since the quad renderer holds no renderer back-ref
+     * of its own. Null until {@link setForwardRenderer} runs.
+     *
+     * @type {import('../renderer/forward-renderer.js').ForwardRenderer|null}
+     * @private
+     */
+    _forwardRenderer = null;
+
+    /**
+     * Dedicated render-address pick material (RGBA8-packed splatId output). Built lazily on
+     * the first {@link prepareForPicking} call so normal rendering pays nothing.
+     *
+     * @type {ShaderMaterial|null}
+     * @private
+     */
+    _pickMaterial = null;
+
+    /**
+     * Pick mesh instance sharing this.meshInstance's mesh + instancing setup, bound to the
+     * render-address pick material.
+     *
+     * @type {MeshInstance|null}
+     * @private
+     */
+    _pickMeshInstance = null;
+
+    /**
+     * Offscreen RGBA8 pick texture (cleared to white = 0xFFFFFFFF "no splat" sentinel).
+     *
+     * @type {Texture|null}
+     * @private
+     */
+    _pickTexture = null;
+
+    /**
+     * Render target wrapping {@link _pickTexture}. depth:false — the raster CPU-sort order
+     * draws farthest→nearest with BLEND_NONE so the last write wins (nearest splat) with no
+     * depth buffer needed.
+     *
+     * @type {RenderTarget|null}
+     * @private
+     */
+    _pickRenderTarget = null;
+
+    /**
+     * Immediate render pass that draws {@link _pickMeshInstance} into {@link _pickRenderTarget}.
+     *
+     * @type {RenderPassGSplatRasterPick|null}
+     * @private
+     */
+    _pickRenderPass = null;
 
     /**
      * @param {GraphicsDevice} device - The graphics device.
@@ -131,11 +191,151 @@ class GSplatQuadRenderer extends GSplatRenderer {
         this._material.destroy();
         this.meshInstance.destroy();
 
+        this._pickMaterial?.destroy();
+        this._pickMeshInstance?.destroy();
+        this._pickRenderTarget?.destroy();
+        this._pickTexture?.destroy();
+        this._pickRenderPass?.destroy();
+
         super.destroy();
     }
 
     get material() {
         return this._material;
+    }
+
+    /**
+     * Threads in the forward renderer used to execute the render-address pick pass. Called by
+     * the manager (which owns the director → renderer back-ref) before any pick.
+     *
+     * @param {import('../renderer/forward-renderer.js').ForwardRenderer} renderer - The forward renderer.
+     */
+    setForwardRenderer(renderer) {
+        this._forwardRenderer = renderer;
+    }
+
+    /**
+     * Render-address pick (raster CPU-sort path). Renders the splat geometry into an offscreen
+     * RGBA8 target with each fragment encoding the front-most splat's work-buffer render address
+     * (splat.index), executed immediately so a readback right after returns this pass's result.
+     *
+     * Mirrors the framework Picker: a dedicated pick material + mesh instance sharing the real
+     * mesh, drawn via renderForward(SHADER_PICK) inside an own RenderPass executed via .render().
+     * The target clears to WHITE (0xFFFFFFFF) = "no splat"; fragments below the requested
+     * alphaClip discard, leaving the sentinel.
+     *
+     * @param {object} camera - The internal Camera to pick from (the gsplat pick convention —
+     * the framework picker hands director.prepareForPicking the internal Camera, never the
+     * CameraComponent; a component-shaped guard here silently nulled every raster pick).
+     * @param {number} width - Pick target width in pixels.
+     * @param {number} height - Pick target height in pixels.
+     * @param {number} alphaClip - Fragment alpha threshold for this pick pass.
+     * @returns {RenderTarget|null} The pick render target (its colorBuffer holds the result), or
+     * null when there is nothing to pick (no sort yet, zero count, or no forward renderer).
+     */
+    prepareForPicking(camera, width, height, alphaClip = 0.3) {
+        const forwardRenderer = this._forwardRenderer;
+        if (!forwardRenderer || !camera) return null;
+
+        // Nothing sorted/visible yet — no splat geometry to draw.
+        if (!this.meshInstance.visible || this.meshInstance.instancingCount <= 0) return null;
+
+        const w = Math.max(1, Math.floor(width));
+        const h = Math.max(1, Math.floor(height));
+
+        // Lazily create the offscreen RGBA8 pick texture + target (depth:false).
+        if (!this._pickTexture) {
+            this._pickTexture = new Texture(this.device, {
+                name: 'GSplatRasterPickAddr',
+                width: w,
+                height: h,
+                format: PIXELFORMAT_RGBA8,
+                mipmaps: false,
+                minFilter: FILTER_NEAREST,
+                magFilter: FILTER_NEAREST
+            });
+            this._pickRenderTarget = new RenderTarget({
+                name: 'GSplatRasterPickRT',
+                colorBuffer: this._pickTexture,
+                depth: false
+            });
+        } else if (this._pickTexture.width !== w || this._pickTexture.height !== h) {
+            this._pickRenderTarget.resize(w, h);
+        }
+
+        // Lazily create the dedicated pick material + pick mesh instance sharing the real mesh.
+        if (!this._pickMaterial) {
+            this._pickMaterial = new ShaderMaterial({
+                uniqueName: 'UnifiedSplatRasterPickMaterial',
+                vertexGLSL: '#include "gsplatVS"',
+                fragmentGLSL: '#include "gsplatPS"',
+                vertexWGSL: '#include "gsplatVS"',
+                fragmentWGSL: '#include "gsplatPS"',
+                attributes: {
+                    vertex_position: SEMANTIC_POSITION
+                }
+            });
+
+            this._pickMaterial.setDefine('{GSPLAT_INSTANCE_SIZE}', GSplatResourceBase.instanceSize);
+            this._pickMaterial.setDefine('SH_BANDS', '0');
+            this._pickMaterial.setDefine('GSPLAT_SEPARATE_OPACITY', '');
+            this._pickMaterial.setDefine('DITHER_NONE', '');
+            // Render-address pick: emit splat.index as the encoded pick id, and keep PICK_CUSTOM_ID
+            // so pick.js does not declare/require the meshInstanceId uniform.
+            this._pickMaterial.setDefine('GSPLAT_RENDER_ADDR_PASS', '');
+            this._pickMaterial.setDefine('PICK_CUSTOM_ID', '');
+
+            const colorStream = this.workBuffer.format.getStream('dataColor');
+            if (colorStream && colorStream.format !== PIXELFORMAT_RGBA16U) {
+                this._pickMaterial.setDefine('GSPLAT_COLOR_FLOAT', '');
+            }
+
+            this._pickMaterial.cull = CULLFACE_NONE;
+            this._pickMaterial.blendType = BLEND_NONE;
+            this._pickMaterial.depthWrite = false;
+            this._pickMaterial.depthTest = false;
+
+            const mesh = this.meshInstance.mesh;
+            this._pickMeshInstance = new MeshInstance(mesh, this._pickMaterial);
+            this._pickMeshInstance.node = this.node;
+            this._pickMeshInstance.setInstancing(true, true);
+            this._pickMeshInstance.cull = false;
+
+            this._pickRenderPass = new RenderPassGSplatRasterPick(this.device, forwardRenderer);
+        }
+
+        // Mirror the format chunks + work-buffer textures onto the pick material every pick so it
+        // tracks any extra-stream / format changes, then bind the current order + splat count.
+        this._injectFormatChunksInto(this._pickMaterial);
+        for (const stream of this.workBuffer.format.resourceStreams) {
+            const texture = this.workBuffer.getTexture(stream.name);
+            if (texture) {
+                this._pickMaterial.setParameter(stream.name, texture);
+            }
+        }
+        if (this.device.isWebGPU) {
+            this._pickMaterial.setParameter('splatOrder', this.workBuffer.orderBuffer);
+        } else {
+            this._pickMaterial.setParameter('splatOrder', this.workBuffer.orderTexture);
+        }
+        this._pickMaterial.setParameter('numSplats', this._material.getParameter('numSplats')?.data ?? 0);
+        this._pickMaterial.setParameter('splatTextureSize', this.workBuffer.textureSize);
+        // Discard fragments below this alpha. Brush paint-out may lower it to
+        // the visible-render threshold so faint selected splats remain pickable.
+        this._pickMaterial.setParameter('alphaClip', alphaClip);
+        this._pickMaterial.update();
+
+        // Match the forward mesh's instancing count (work-buffer slots / 128).
+        this._pickMeshInstance.instancingCount = this.meshInstance.instancingCount;
+
+        // Execute the pass immediately (clear to white = no-splat sentinel), so a readback right
+        // after returns this pass's result rather than a future frame's.
+        this._pickRenderPass.init(this._pickRenderTarget);
+        this._pickRenderPass.setClearColor(_pickClearColor);
+        this._pickRenderPass.update(camera, this._pickMeshInstance);
+        this._pickRenderPass.render();
+
+        return this._pickRenderTarget;
     }
 
     onWorkBufferFormatChanged() {
@@ -200,7 +400,18 @@ class GSplatQuadRenderer extends GSplatRenderer {
      * @private
      */
     _injectFormatChunks() {
-        const chunks = this.device.isWebGPU ? this._material.shaderChunks.wgsl : this._material.shaderChunks.glsl;
+        this._injectFormatChunksInto(this._material);
+    }
+
+    /**
+     * Injects format shader chunks into the given material. Shared by the forward material and
+     * the render-address pick material so both track work-buffer format / extra-stream changes.
+     *
+     * @param {ShaderMaterial} material - The material to inject chunks into.
+     * @private
+     */
+    _injectFormatChunksInto(material) {
+        const chunks = this.device.isWebGPU ? material.shaderChunks.wgsl : material.shaderChunks.glsl;
         const wbFormat = this.workBuffer.format;
 
         // Use work buffer format for declarations and read code

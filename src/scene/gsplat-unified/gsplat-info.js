@@ -47,6 +47,15 @@ class GSplatInfo {
     lodIndex;
 
     /**
+     * File index within the LOD package. -1 for non-octree (single-file) splats,
+     * which callers treat as fileIndex 0. Set by GSplatManager when building the
+     * world state from octree file placements.
+     *
+     * @type {number}
+     */
+    fileIndex = -1;
+
+    /**
      * Unique identifier from the placement, used for picking.
      *
      * @type {number}

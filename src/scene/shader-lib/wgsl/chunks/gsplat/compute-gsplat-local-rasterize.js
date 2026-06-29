@@ -50,6 +50,9 @@ struct Uniforms {
 #ifdef PICK_MODE
     @group(0) @binding(7) var pickIdTexture: texture_storage_2d<r32uint, write>;
     @group(0) @binding(8) var pickDepthTexture: texture_storage_2d<rgba16float, write>;
+    // Render-address output: work-buffer pixel index (splatId) of the front-most above-threshold
+    // splat. CPU-side resolution maps splatId -> (fileIndex, localSplatIndex, lodLevel).
+    @group(0) @binding(9) var renderAddrTexture: texture_storage_2d<r32uint, write>;
 #else
     @group(0) @binding(7) var outputTexture: texture_storage_2d<rgba16float, write>;
     #ifdef DEPTH_TEST
@@ -71,6 +74,8 @@ var<workgroup> sharedPowerCutoff: array<f32, 64>;
 #ifdef PICK_MODE
     var<workgroup> sharedOpacity: array<half, 64>;
     var<workgroup> sharedPickId: array<u32, 64>;
+    // Work-buffer pixel index (splatId) for render-address pick. Parallel to sharedPickId.
+    var<workgroup> sharedSplatId: array<u32, 64>;
     var<workgroup> sharedViewDepth: array<f32, 64>;
 #else
     var<workgroup> sharedColor: array<half4, 64>;
@@ -79,12 +84,13 @@ var<workgroup> sharedPowerCutoff: array<f32, 64>;
     #endif
 #endif
 
-// Evaluate a single splat for picking. Records the front-most pick ID (first splat above
-// alphaClip) and accumulates alpha-weighted depth for sub-pixel depth reconstruction.
+// Evaluate a single splat for picking. Records the front-most pick ID and splatId (first
+// splat above alphaClip) and accumulates alpha-weighted depth for sub-pixel depth reconstruction.
 #ifdef PICK_MODE
 fn evalSplatPick(pixelCoord: vec2f, center: vec2f, coeffX: f32, coeffY: f32, coeffXY: f32,
-                 opacity: half, pickId: u32, viewDepth: f32, alphaClip: half,
-                 bestPickId: ptr<function, u32>, depthAccum: ptr<function, f32>,
+                 opacity: half, pickId: u32, splatId: u32, viewDepth: f32, alphaClip: half,
+                 bestPickId: ptr<function, u32>, bestSplatId: ptr<function, u32>,
+                 depthAccum: ptr<function, f32>,
                  weightAccum: ptr<function, f32>, T: ptr<function, half>) {
     let dx = pixelCoord - center;
     let power = coeffX * dx.x * dx.x + coeffXY * dx.x * dx.y + coeffY * dx.y * dx.y;
@@ -98,6 +104,7 @@ fn evalSplatPick(pixelCoord: vec2f, center: vec2f, coeffX: f32, coeffY: f32, coe
     if (alpha >= alphaClip) {
         if (*bestPickId == 0xFFFFFFFFu) {
             *bestPickId = pickId;
+            *bestSplatId = splatId;
         }
         let normalizedDepth = saturate((viewDepth - uniforms.nearClip) / (uniforms.farClip - uniforms.nearClip));
         let w = f32(alpha) * f32(*T);
@@ -155,6 +162,10 @@ fn main(
         // front-most pick ID per pixel
         var pickId00: u32 = 0xFFFFFFFFu; var pickId10: u32 = 0xFFFFFFFFu;
         var pickId01: u32 = 0xFFFFFFFFu; var pickId11: u32 = 0xFFFFFFFFu;
+
+        // front-most work-buffer pixel index (splatId) per pixel — render-address pick
+        var splatId00: u32 = 0xFFFFFFFFu; var splatId10: u32 = 0xFFFFFFFFu;
+        var splatId01: u32 = 0xFFFFFFFFu; var splatId11: u32 = 0xFFFFFFFFu;
 
         // alpha-weighted depth accumulators
         var dAcc00: f32 = 0.0; var dAcc10: f32 = 0.0;
@@ -226,6 +237,7 @@ fn main(
 
             #ifdef PICK_MODE
                 sharedPickId[localIdx] = projCache[base + 5u];
+                sharedSplatId[localIdx] = cacheIdx;
                 sharedOpacity[localIdx] = half(unpack2x16float(projCache[base + 6u]).y);
                 sharedViewDepth[localIdx] = bitcast<f32>(depthBuffer[cacheIdx]);
             #else
@@ -266,6 +278,7 @@ fn main(
                 #ifdef PICK_MODE
                     let splatOpacity = sharedOpacity[i];
                     let splatPickId = sharedPickId[i];
+                    let splatRawId = sharedSplatId[i];
                     let splatDepth = sharedViewDepth[i];
 
                     // Skip the 4 per-pixel pick evaluations entirely when the splat
@@ -278,10 +291,10 @@ fn main(
                         continue;
                     }
 
-                    evalSplatPick(p00, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatDepth, clipH, &pickId00, &dAcc00, &wAcc00, &T00);
-                    evalSplatPick(p10, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatDepth, clipH, &pickId10, &dAcc10, &wAcc10, &T10);
-                    evalSplatPick(p01, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatDepth, clipH, &pickId01, &dAcc01, &wAcc01, &T01);
-                    evalSplatPick(p11, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatDepth, clipH, &pickId11, &dAcc11, &wAcc11, &T11);
+                    evalSplatPick(p00, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatRawId, splatDepth, clipH, &pickId00, &splatId00, &dAcc00, &wAcc00, &T00);
+                    evalSplatPick(p10, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatRawId, splatDepth, clipH, &pickId10, &splatId10, &dAcc10, &wAcc10, &T10);
+                    evalSplatPick(p01, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatRawId, splatDepth, clipH, &pickId01, &splatId01, &dAcc01, &wAcc01, &T01);
+                    evalSplatPick(p11, center, coeffs.x, coeffs.y, coeffs.z, splatOpacity, splatPickId, splatRawId, splatDepth, clipH, &pickId11, &splatId11, &dAcc11, &wAcc11, &T11);
 
                     if (all(vec4<half>(T00, T10, T01, T11) < half4(ALPHA_THRESHOLD))) {
                         threadDone = true;
@@ -374,6 +387,7 @@ fn main(
             #ifdef PICK_MODE
                 textureStore(pickIdTexture, basePixel, vec4u(pickId00, 0u, 0u, 0u));
                 textureStore(pickDepthTexture, basePixel, vec4f(dAcc00, wAcc00, 0.0, 0.0));
+                textureStore(renderAddrTexture, basePixel, vec4u(splatId00, 0u, 0u, 0u));
             #else
                 textureStore(outputTexture, basePixel, vec4f(decodeGamma3(vec3f(c00)), f32(half(1.0) - T.x)));
             #endif
@@ -383,6 +397,7 @@ fn main(
             #ifdef PICK_MODE
                 textureStore(pickIdTexture, px10, vec4u(pickId10, 0u, 0u, 0u));
                 textureStore(pickDepthTexture, px10, vec4f(dAcc10, wAcc10, 0.0, 0.0));
+                textureStore(renderAddrTexture, px10, vec4u(splatId10, 0u, 0u, 0u));
             #else
                 textureStore(outputTexture, px10, vec4f(decodeGamma3(vec3f(c10)), f32(half(1.0) - T.y)));
             #endif
@@ -392,6 +407,7 @@ fn main(
             #ifdef PICK_MODE
                 textureStore(pickIdTexture, px01, vec4u(pickId01, 0u, 0u, 0u));
                 textureStore(pickDepthTexture, px01, vec4f(dAcc01, wAcc01, 0.0, 0.0));
+                textureStore(renderAddrTexture, px01, vec4u(splatId01, 0u, 0u, 0u));
             #else
                 textureStore(outputTexture, px01, vec4f(decodeGamma3(vec3f(c01)), f32(half(1.0) - T.z)));
             #endif
@@ -401,6 +417,7 @@ fn main(
             #ifdef PICK_MODE
                 textureStore(pickIdTexture, px11, vec4u(pickId11, 0u, 0u, 0u));
                 textureStore(pickDepthTexture, px11, vec4f(dAcc11, wAcc11, 0.0, 0.0));
+                textureStore(renderAddrTexture, px11, vec4u(splatId11, 0u, 0u, 0u));
             #else
                 textureStore(outputTexture, px11, vec4f(decodeGamma3(vec3f(c11)), f32(half(1.0) - T.w)));
             #endif

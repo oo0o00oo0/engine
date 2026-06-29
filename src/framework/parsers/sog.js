@@ -128,7 +128,7 @@ class SogParser {
 
         const { assets } = this.app;
 
-        const subs = ['means', 'quats', 'scales', 'sh0', 'shN'];
+        const subs = ['means', 'quats', 'scales', 'sh0', 'shN', 'featureColor'];
 
         const textures = {};
         const promises = [];
@@ -204,6 +204,7 @@ class SogParser {
         data.sh0 = textures.sh0[0].resource;
         data.sh_centroids = textures.shN?.[0]?.resource;
         data.sh_labels = textures.shN?.[1]?.resource;
+        data.featureColor = textures.featureColor?.[0]?.resource;
         data.shBands = GSplatSogData.calcBands(data.sh_centroids?.width);
 
         const decompress = asset.data?.decompress;

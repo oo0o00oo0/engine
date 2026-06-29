@@ -170,6 +170,8 @@ class GSplatSogData {
 
     sh_labels;
 
+    featureColor;
+
     /**
      * V2-only codebook LUT (256x1 RGBA32F): .r = scales, .g = sh0, .b = shN, .a unused.
      * Built from meta codebooks in prepareCodebook(). Null for V1 assets.
@@ -207,6 +209,7 @@ class GSplatSogData {
         this.sh0?.destroy();
         this.sh_centroids?.destroy();
         this.sh_labels?.destroy();
+        this.featureColor?.destroy();
         this.codebookTexture?.destroy();
         this.codebookTexture = null;
     }

@@ -14,7 +14,7 @@ mediump vec4 discardVec = vec4(0.0, 0.0, 2.0, 1.0);
     varying float vLinearDepth;
 #endif
 
-#if defined(GSPLAT_UNIFIED_ID) && defined(PICK_PASS)
+#if (defined(GSPLAT_UNIFIED_ID) || defined(GSPLAT_RENDER_ADDR_PASS)) && defined(PICK_PASS)
     flat varying uint vPickId;
 #endif
 
@@ -116,7 +116,11 @@ void main(void) {
         vLinearDepth = -center.view.z;
     #endif
 
-    #if defined(GSPLAT_UNIFIED_ID) && defined(PICK_PASS)
+    #if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
+        // Render-address pick: carry the work-buffer render address (splat.index)
+        // so the pick fragment encodes the splatId directly (raster pick path).
+        vPickId = splat.index;
+    #elif defined(GSPLAT_UNIFIED_ID) && defined(PICK_PASS)
         vPickId = loadPcId().r;
     #endif
 }

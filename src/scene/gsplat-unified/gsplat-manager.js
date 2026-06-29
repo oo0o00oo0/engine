@@ -536,9 +536,12 @@ class GSplatManager {
      * @param {object} camera - The camera.
      * @param {number} width - Pick target width.
      * @param {number} height - Pick target height.
+     * @param {{ alphaClip?: number }} [options] - Optional pick-pass overrides.
      * @returns {import('../mesh-instance.js').MeshInstance|null} The pick mesh instance, or null.
      */
-    prepareForPicking(camera, width, height) {
+    prepareForPicking(camera, width, height, options) {
+        const alphaClip = Math.max(ALPHA_VISIBILITY_THRESHOLD, options?.alphaClip ?? this.scene.gsplat.alphaClip);
+
         if (this.activeRenderer === GSPLAT_RENDERER_RASTER_HYBRID) {
             const sortedState = this.worldStates.get(this.sortedVersion);
             if (!sortedState?.sortedBefore || !camera.node) return null;
@@ -548,7 +551,7 @@ class GSplatManager {
                 camera.node,
                 width,
                 height,
-                Math.max(ALPHA_VISIBILITY_THRESHOLD, this.scene.gsplat.alphaClip),
+                alphaClip,
                 !!this.workBuffer.format.getStream('pcId')
             );
             if (!sortedIndices) return null;
@@ -560,16 +563,264 @@ class GSplatManager {
                 sortedIndices,
                 /** @type {StorageBuffer} */ (proj.projCache),
                 /** @type {StorageBuffer} */ (ic.numSplatsBuffer),
-                this.scene.gsplat.alphaClip,
+                alphaClip,
                 camera.node
             );
+        }
+
+        if (this.activeRenderer === GSPLAT_RENDERER_RASTER_CPU_SORT) {
+            // Raster CPU-sort path: render the splat geometry into an offscreen RGBA8 target
+            // with each fragment encoding the front-most splat's work-buffer render address.
+            // Executed immediately by the quad renderer; the resulting render target is stored
+            // for pickRenderAddrSplatId to read back (with the WebGL2 Y-flip).
+            const quadRenderer = /** @type {any} */ (this.renderer);
+            this._rasterPickRenderTarget = quadRenderer.prepareForPicking(camera, width, height, alphaClip) ?? null;
+            // No mesh instance to inject into the framework picker — this path renders itself.
+            return null;
         }
 
         if (this.activeRenderer !== GSPLAT_RENDERER_COMPUTE) return null;
 
         /** @type {GSplatComputeLocalRenderer} */
         const localRenderer = /** @type {any} */ (this.renderer);
-        return localRenderer.dispatchPick(camera, width, height);
+        return localRenderer.dispatchPick(camera, width, height, alphaClip);
+    }
+
+    /**
+     * Render-address pick target from the most recent raster CPU-sort pick dispatch. Its
+     * colorBuffer is an RGBA8 texture; each pixel packs the front-most splat's work-buffer
+     * render address (or white = 0xFFFFFFFF for "no splat"). Null on other renderers or before
+     * the first raster pick dispatch.
+     *
+     * @type {import('../../platform/graphics/render-target.js').RenderTarget|null}
+     * @private
+     */
+    _rasterPickRenderTarget = null;
+
+    /**
+     * The render-address texture from the most recent pick dispatch, or null if no pick has
+     * been dispatched or the active renderer is not the compute renderer. r32uint format;
+     * each pixel holds the work-buffer pixel index (splatId) of the front-most splat that
+     * passes alphaClip at that screen position.
+     *
+     * @returns {import('../../platform/graphics/texture.js').Texture|null}
+     */
+    get renderAddrTexture() {
+        if (this.activeRenderer !== GSPLAT_RENDERER_COMPUTE) return null;
+        const localRenderer = /** @type {any} */ (this.renderer);
+        return localRenderer.lastRenderAddrTexture ?? null;
+    }
+
+    /**
+     * Resolves a work-buffer pixel index (splatId from a render-address pick) to a generic
+     * render address: the file index, local splat index within that file, and LOD level.
+     *
+     * Performs a linear scan over the active world state's splat interval data entirely on
+     * the CPU — no GPU readback. Returns null when splatId is out of range or no world state
+     * is active.
+     *
+     * @param {number} splatId - Work-buffer pixel index returned by a render-address pick.
+     * @returns {{ fileIndex: number, localSplatIndex: number, lodLevel: number }|null}
+     */
+    resolveRenderAddress(splatId) {
+        const sortedState = this.worldStates.get(this.sortedVersion);
+        if (!sortedState) return null;
+
+        const splats = sortedState.splats;
+        for (let s = 0; s < splats.length; s++) {
+            const splat = splats[s];
+            const offsets = splat.intervalOffsets;
+            const intervals = splat.intervals;
+            const numIntervals = offsets.length;
+
+            if (numIntervals === 0) {
+                // No intervals: splat occupies [offset, offset + activeSplats)
+                // intervalOffsets[0] is set for single-allocation splats; fall through
+                // to the single-interval branch using activeSplats as the count.
+                const offset = offsets[0];
+                if (offset === undefined) continue;
+                const count = splat.activeSplats;
+                if (splatId >= offset && splatId < offset + count) {
+                    const fileIndex = splat.fileIndex >= 0 ? splat.fileIndex : 0;
+                    return { fileIndex, localSplatIndex: splatId - offset, lodLevel: splat.lodIndex };
+                }
+                continue;
+            }
+
+            for (let i = 0; i < numIntervals; i++) {
+                const offset = offsets[i];
+                const start = intervals[i * 2];
+                const end = intervals[i * 2 + 1]; // half-open: [start, end)
+                // Non-octree full-range path: intervalOffsets=[offset] with empty intervals
+                // means the splat occupies [offset, offset + activeSplats) with source
+                // indices starting at 0. Treat as the [0, activeSplats) source block.
+                if (start === undefined || end === undefined) {
+                    const count = splat.activeSplats;
+                    if (count > 0 && splatId >= offset && splatId < offset + count) {
+                        const fileIndex = splat.fileIndex >= 0 ? splat.fileIndex : 0;
+                        return { fileIndex, localSplatIndex: splatId - offset, lodLevel: splat.lodIndex };
+                    }
+                    continue;
+                }
+                const count = end - start;
+                if (splatId >= offset && splatId < offset + count) {
+                    const fileIndex = splat.fileIndex >= 0 ? splat.fileIndex : 0;
+                    const localSplatIndex = start + (splatId - offset);
+                    return { fileIndex, localSplatIndex, lodLevel: splat.lodIndex };
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Reads the work-buffer splatId at canvas position (x, y) from the render-address
+     * texture via GPU async readback, then returns it for CPU resolution via
+     * resolveRenderAddress. Returns null when no render-address texture is available
+     * (renderer not compute, or no pick dispatch has run yet).
+     *
+     * The caller is responsible for ensuring a prepareForPicking dispatch has run for
+     * the current frame before calling this method. Callers pass TOP-LEFT-origin canvas
+     * coordinates; the raster path applies the WebGL2 bottom-left readback Y-flip internally.
+     *
+     * @param {number} x - Canvas X coordinate in pixels (top-left origin).
+     * @param {number} y - Canvas Y coordinate in pixels (top-left origin).
+     * @param {{ immediate?: boolean }} [options] - Readback options. immediate forces a prompt
+     * GPU submit + readback so consecutive picks do not batch into one stale texel.
+     * @returns {Promise<number|null>}
+     */
+    async pickRenderAddrSplatId(x, y, options) {
+        const immediate = options?.immediate;
+
+        if (this.activeRenderer === GSPLAT_RENDERER_RASTER_CPU_SORT) {
+            const rt = this._rasterPickRenderTarget;
+            const tex = rt?.colorBuffer;
+            if (!rt || !tex) return null;
+
+            // WebGL2 reads back with a bottom-left origin; flip the top-left canvas Y against the
+            // pick target height before reading (mirrors the framework Picker).
+            let readX = Math.floor(x);
+            let readY = Math.floor(y);
+            if (this.device.isWebGL2) {
+                readY = rt.height - (readY + 1);
+            }
+            readX = Math.max(0, Math.min(readX, tex.width - 1));
+            readY = Math.max(0, Math.min(readY, tex.height - 1));
+
+            const pixels = await tex.read(readX, readY, 1, 1, { immediate, renderTarget: rt });
+            if (!pixels || pixels.length < 4) return null;
+            // RGBA8 pack: R=bits23:16, G=15:8, B=7:0, A=31:24 (matches encodePickOutput).
+            const r = pixels[0];
+            const g = pixels[1];
+            const b = pixels[2];
+            const a = pixels[3];
+            const splatId = (a << 24 | r << 16 | g << 8 | b) >>> 0;
+            // White (0xFFFFFFFF) is the "no splat" sentinel (cleared background).
+            if (splatId === 0xffffffff) return null;
+            return splatId;
+        }
+
+        if (this.activeRenderer === GSPLAT_RENDERER_COMPUTE) {
+            const tex = this.renderAddrTexture;
+            if (!tex) return null;
+            const pixels = await tex.read(Math.floor(x), Math.floor(y), 1, 1, { immediate });
+            if (!pixels || pixels.length === 0) return null;
+            const splatId = pixels[0];
+            // r32uint sentinel for "no splat" is 0xffffffff (written by the shader for
+            // pixels that pass no alpha-threshold splat).
+            if (splatId === undefined || splatId === 0xffffffff) return null;
+            return splatId;
+        }
+
+        return null;
+    }
+
+    /**
+     * Reads back a w×h rectangle of work-buffer splatIds from the render-address texture, for
+     * brush-style selection (e.g. paint-out a swept area). Mirrors {@link pickRenderAddrSplatId}'s
+     * renderer branching, but reads a rectangle in one GPU readback and returns the whole set of
+     * splatIds under the rect. The 0xffffffff "no splat" sentinel entries are INCLUDED in the
+     * result — callers filter them (cheaper than compacting on the GPU-readback boundary).
+     *
+     * The caller is responsible for ensuring a prepareForPicking dispatch has run for the current
+     * frame before calling. Callers pass TOP-LEFT-origin canvas coordinates for the rect's top-left
+     * corner; the raster path applies the WebGL2 bottom-left readback Y-flip internally.
+     *
+     * ROW ORDER: after the WebGL2 flipped readback the returned rows are bottom-up (not re-flipped
+     * here). Callers that only need the SET of ids are unaffected; the per-row order is unspecified.
+     *
+     * The rect is clamped to the texture bounds, so an oversize or edge-straddling rect is safe.
+     * Returns null when no render-address texture is available (unsupported renderer, or pre-first
+     * pick) or the clamped rect is empty.
+     *
+     * @param {number} x - Rect top-left X in canvas pixels (top-left origin).
+     * @param {number} y - Rect top-left Y in canvas pixels (top-left origin).
+     * @param {number} width - Rect width in pixels.
+     * @param {number} height - Rect height in pixels.
+     * @param {{ immediate?: boolean }} [options] - Readback options. immediate forces a prompt GPU
+     * submit + readback so consecutive picks do not batch into one stale rect.
+     * @returns {Promise<Uint32Array|null>}
+     */
+    async pickRenderAddrRect(x, y, width, height, options) {
+        const immediate = options?.immediate;
+
+        let rx = Math.floor(x);
+        let ry = Math.floor(y);
+        let rw = Math.floor(width);
+        let rh = Math.floor(height);
+
+        if (this.activeRenderer === GSPLAT_RENDERER_RASTER_CPU_SORT) {
+            const rt = this._rasterPickRenderTarget;
+            const tex = rt?.colorBuffer;
+            if (!rt || !tex) return null;
+
+            // WebGL2 reads back with a bottom-left origin: flip the rect's top edge against the
+            // pick-target height. For a RECT of height rh the bottom-left read origin is
+            // rt.height - (ry + rh). Rows come back bottom-up (documented above); callers only
+            // need the id SET so we do not re-flip.
+            if (this.device.isWebGL2) {
+                ry = rt.height - (ry + rh);
+            }
+
+            // Clamp the rect to the texture bounds (edge-straddling / oversize is safe).
+            if (rx < 0) { rw += rx; rx = 0; }
+            if (ry < 0) { rh += ry; ry = 0; }
+            if (rx + rw > tex.width) rw = tex.width - rx;
+            if (ry + rh > tex.height) rh = tex.height - ry;
+            if (rw <= 0 || rh <= 0) return null;
+
+            const pixels = await tex.read(rx, ry, rw, rh, { immediate, renderTarget: rt });
+            if (!pixels || pixels.length < rw * rh * 4) return null;
+
+            // RGBA8 pack per texel: R=bits23:16, G=15:8, B=7:0, A=31:24 (matches encodePickOutput).
+            const count = rw * rh;
+            const out = new Uint32Array(count);
+            for (let i = 0; i < count; i++) {
+                const p = i * 4;
+                out[i] = (pixels[p + 3] << 24 | pixels[p] << 16 | pixels[p + 1] << 8 | pixels[p + 2]) >>> 0;
+            }
+            return out;
+        }
+
+        if (this.activeRenderer === GSPLAT_RENDERER_COMPUTE) {
+            const tex = this.renderAddrTexture;
+            if (!tex) return null;
+
+            // Clamp the rect to the texture bounds (compute path reads top-left origin r32uint).
+            if (rx < 0) { rw += rx; rx = 0; }
+            if (ry < 0) { rh += ry; ry = 0; }
+            if (rx + rw > tex.width) rw = tex.width - rx;
+            if (ry + rh > tex.height) rh = tex.height - ry;
+            if (rw <= 0 || rh <= 0) return null;
+
+            const pixels = await tex.read(rx, ry, rw, rh, { immediate });
+            if (!pixels || pixels.length < rw * rh) return null;
+            // r32uint: one uint per texel. Copy into a dense Uint32Array (sentinels included).
+            return Uint32Array.from(pixels.subarray(0, rw * rh));
+        }
+
+        return null;
     }
 
     /**
@@ -621,7 +872,11 @@ class GSplatManager {
             this.renderer = new GSplatHybridRenderer(this.device, this.node, this.cameraNode, this.layer, this.workBuffer);
             this.initHybridSorting();
         } else {
-            this.renderer = new GSplatQuadRenderer(this.device, this.node, this.cameraNode, this.layer, this.workBuffer);
+            const quadRenderer = new GSplatQuadRenderer(this.device, this.node, this.cameraNode, this.layer, this.workBuffer);
+            // Thread the forward renderer through so the raster CPU-sort path can execute its
+            // render-address pick pass via renderForward (the quad renderer holds no renderer ref).
+            quadRenderer.setForwardRenderer(this.director.renderer);
+            this.renderer = quadRenderer;
             if (mode === GSPLAT_RENDERER_RASTER_GPU_SORT) {
                 this.initGpuSorting();
             } else {
@@ -742,15 +997,19 @@ class GSplatManager {
 
             // add octree splats
             for (const [, inst] of this.octreeInstances) {
-                inst.activePlacements.forEach((p) => {
-                    if (p.resource) {
+                // Iterate filePlacements by index so each GSplatInfo carries its fileIndex.
+                // activePlacements is a Set and does not expose the per-file index directly.
+                for (let fi = 0; fi < inst.filePlacements.length; fi++) {
+                    const p = inst.filePlacements[fi];
+                    if (p && p.resource && inst.activePlacements.has(p)) {
                         p.ensureInstanceStreams(this.device);
                         const octreeNodes = p.intervals.size > 0 ? inst.octree.nodes : null;
                         const nodeInfos = octreeNodes ? inst.nodeInfos : null;
                         const splatInfo = new GSplatInfo(this.device, p.resource, p, p.consumeRenderDirty.bind(p), octreeNodes, nodeInfos);
+                        splatInfo.fileIndex = fi;
                         splats.push(splatInfo);
                     }
-                });
+                }
             }
 
             // Check for centers version changes and force-update sorter for changed resources
