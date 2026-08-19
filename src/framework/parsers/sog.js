@@ -162,6 +162,11 @@ class SogParser {
         // Track if asset was unloaded during async loading
         let unloaded = false;
 
+        // Compressed SOG resources retain the texture resources and release them
+        // through their own ref-counted lifetime. Until that ownership transfer,
+        // this parser remains responsible for unloading the textures.
+        let ownedByResource = false;
+
         // When the parent gsplat asset unloads, remove and unload child texture assets
         asset.once('unload', () => {
             unloaded = true;
@@ -170,8 +175,15 @@ class SogParser {
                 // remove from registry
                 assets.remove(t);
 
-                // destroys resource
-                t.unload();
+                // Once the SOG resource owns the textures, destroying them here
+                // can invalidate a unified-world state that still references it.
+                if (!ownedByResource) {
+                    t.unload();
+                } else {
+                    // The resource destroys the textures (possibly deferred), but they remain in
+                    // the loader cache unless the parser explicitly invalidates those entries.
+                    assets._loader.clearCache(t.getFileUrl(), t.type);
+                }
             });
         });
 
@@ -230,6 +242,8 @@ class SogParser {
         const resource = decompress ?
             new GSplatResource(this.app.graphicsDevice, await data.decompress()) :
             new GSplatSogResource(this.app.graphicsDevice, data);
+
+        ownedByResource = !decompress;
 
         if (this._shouldAbort(asset, unloaded)) {
             resource.destroy();
