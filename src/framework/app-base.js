@@ -1941,6 +1941,10 @@ class AppBase extends EventHandler {
             setApplication(null);
         }
 
+        if (app === this) {
+            app = null;
+        }
+
         AppBase.cancelTick(this);
     }
 

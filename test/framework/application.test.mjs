@@ -1,5 +1,6 @@
 import { expect } from 'chai';
 
+import { app as currentApp } from '../../src/framework/app-base.js';
 import { AssetRegistry } from '../../src/framework/asset/asset-registry.js';
 import { ComponentSystemRegistry } from '../../src/framework/components/registry.js';
 import { FILLMODE_KEEP_ASPECT, RESOLUTION_FIXED } from '../../src/framework/constants.js';
@@ -85,6 +86,17 @@ describe('Application', function () {
             // expect(app.xr).to.be.null;
 
             app = null;
+        });
+
+        it('lets go of the current application when it is the one destroyed', function () {
+            const other = createApp();
+
+            app.destroy();
+            app = null;
+            expect(currentApp).to.equal(other);
+
+            other.destroy();
+            expect(currentApp).to.be.null;
         });
 
     });

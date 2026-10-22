@@ -130,6 +130,12 @@ class XrManager extends EventHandler {
     _supported = platform.browser && !!navigator.xr;
 
     /**
+     * @type {Function|null}
+     * @private
+     */
+    _deviceChangeHandler = null;
+
+    /**
      * @type {Object<string, boolean>}
      * @private
      */
@@ -300,9 +306,8 @@ class XrManager extends EventHandler {
         // 3. Controllers class
 
         if (this._supported) {
-            navigator.xr.addEventListener('devicechange', () => {
-                this._deviceAvailabilityCheck();
-            });
+            this._deviceChangeHandler = this._deviceAvailabilityCheck.bind(this);
+            navigator.xr.addEventListener('devicechange', this._deviceChangeHandler);
             this._deviceAvailabilityCheck();
 
             this.app.graphicsDevice.on('devicelost', this._onDeviceLost, this);
@@ -315,7 +320,11 @@ class XrManager extends EventHandler {
      *
      * @ignore
      */
-    destroy() { }
+    destroy() {
+        if (this._supported) {
+            navigator.xr.removeEventListener('devicechange', this._deviceChangeHandler);
+        }
+    }
 
     /**
      * Attempts to start XR session for provided {@link CameraComponent} and optionally fires
