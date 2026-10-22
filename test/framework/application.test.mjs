@@ -88,6 +88,16 @@ describe('Application', function () {
             app = null;
         });
 
+        it('destroys the application after a frame on a lost context', function () {
+            app.graphicsDevice.contextLost = true;
+            app.tick();
+
+            app.destroy();
+            expect(app.graphicsDevice).to.be.null;
+
+            app = null;
+        });
+
         it('lets go of the current application when it is the one destroyed', function () {
             const other = createApp();
 

@@ -229,6 +229,7 @@ class AppBase extends EventHandler {
         this.requestAnimationFrame();
 
         if (this.graphicsDevice.contextLost) {
+            this._inFrameUpdate = false;
             return;
         }
 
