@@ -38,7 +38,10 @@ void main(void) {
     }
 
     #if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
-        for (uint i = 0u; i < pickExcludeCount; i++) {
+        for (uint i = 0u; i < {GSPLAT_PICK_EXCLUDE_CAPACITY}u; i++) {
+            if (i >= pickExcludeCount) {
+                break;
+            }
             if (splat.index >= pickExcludeRanges[i].x && splat.index < pickExcludeRanges[i].y) {
                 gl_Position = discardVec;
                 return;

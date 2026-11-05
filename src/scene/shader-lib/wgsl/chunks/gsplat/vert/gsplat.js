@@ -42,7 +42,10 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     }
 
     #if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
-        for (var i: u32 = 0u; i < uniform.pickExcludeCount; i = i + 1u) {
+        for (var i: u32 = 0u; i < {GSPLAT_PICK_EXCLUDE_CAPACITY}u; i = i + 1u) {
+            if (i >= uniform.pickExcludeCount) {
+                break;
+            }
             let excluded = uniform.pickExcludeRanges[i].element;
             if (splat.index >= excluded.x && splat.index < excluded.y) {
                 output.position = discardVec;

@@ -17,11 +17,12 @@ fn getImageEffectUV(uv: vec2<f32>) -> vec2<f32> {
     return modifiedUV;
 }
 
-// types wrapped in size aligned structures to ensure correct alignment in uniform buffer arrays
-struct WrappedF32 { @size(16) element: f32 }
-struct WrappedI32 { @size(16) element: i32 }
-struct WrappedU32 { @size(16) element: u32 }
-struct WrappedVec2F { @size(16) element: vec2f }
-struct WrappedVec2I { @size(16) element: vec2i }
-struct WrappedVec2U { @size(16) element: vec2u }
+// types wrapped in size aligned structures to ensure correct alignment in uniform buffer arrays;
+// @align(16) matches UniformFormat, which starts every array on a 16-byte boundary
+struct WrappedF32 { @align(16) @size(16) element: f32 }
+struct WrappedI32 { @align(16) @size(16) element: i32 }
+struct WrappedU32 { @align(16) @size(16) element: u32 }
+struct WrappedVec2F { @align(16) @size(16) element: vec2f }
+struct WrappedVec2I { @align(16) @size(16) element: vec2i }
+struct WrappedVec2U { @align(16) @size(16) element: vec2u }
 `;
