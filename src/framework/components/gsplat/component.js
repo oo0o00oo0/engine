@@ -190,6 +190,12 @@ class GSplatComponent extends Component {
     _workBufferUpdate = WORKBUFFER_UPDATE_AUTO;
 
     /**
+     * @type {boolean}
+     * @private
+     */
+    _pickable = true;
+
+    /**
      * Custom shader modify code for this component (object with code and pre-computed hash).
      *
      * @type {{ code: string, hash: number }|null}
@@ -591,6 +597,31 @@ class GSplatComponent extends Component {
      */
     get workBufferUpdate() {
         return this._workBufferUpdate;
+    }
+
+    /**
+     * Sets whether the splats are drawn into the render-address pick, so splats behind them
+     * can be picked through them. Only applicable in unified rendering mode, and honoured only
+     * by the {@link GSPLAT_RENDERER_RASTER_CPU_SORT} renderer's render-address pick, which
+     * takes at most 4 merged work-buffer ranges of unpickable splats and throws past that.
+     * Rendering and sorting are unaffected. Defaults to true.
+     *
+     * @type {boolean}
+     */
+    set pickable(value) {
+        this._pickable = value;
+        if (this._placement) {
+            this._placement.pickable = value;
+        }
+    }
+
+    /**
+     * Gets whether the splats are drawn into the render-address pick.
+     *
+     * @type {boolean}
+     */
+    get pickable() {
+        return this._pickable;
     }
 
     /**
@@ -1001,6 +1032,7 @@ class GSplatComponent extends Component {
             this._placement.lodBaseDistance = this._lodBaseDistance;
             this._placement.lodMultiplier = this._lodMultiplier;
             this._placement.workBufferUpdate = this._workBufferUpdate;
+            this._placement.pickable = this._pickable;
             this._placement.workBufferModifier = this._workBufferModifier;
 
             // add placement to layers if component is enabled

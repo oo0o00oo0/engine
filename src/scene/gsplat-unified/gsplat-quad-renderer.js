@@ -22,6 +22,9 @@ import { RenderPassGSplatRasterPick } from './render-pass-gsplat-raster-pick.js'
 
 const _pickClearColor = new Color(1, 1, 1, 1);
 
+// Capacity of the render-address pick's excluded work-buffer ranges (one shader for any count).
+const PICK_EXCLUDE_CAPACITY = 4;
+
 /**
  * Renders splats from the work buffer using instanced quad rendering.
  *
@@ -230,10 +233,12 @@ class GSplatQuadRenderer extends GSplatRenderer {
      * @param {number} width - Pick target width in pixels.
      * @param {number} height - Pick target height in pixels.
      * @param {number} alphaClip - Fragment alpha threshold for this pick pass.
+     * @param {number[]} [excludeRanges] - Flattened, merged work-buffer [start, end) pairs whose
+     * splats the pick skips, at most PICK_EXCLUDE_CAPACITY of them.
      * @returns {RenderTarget|null} The pick render target (its colorBuffer holds the result), or
      * null when there is nothing to pick (no sort yet, zero count, or no forward renderer).
      */
-    prepareForPicking(camera, width, height, alphaClip = 0.3) {
+    prepareForPicking(camera, width, height, alphaClip = 0.3, excludeRanges = []) {
         const forwardRenderer = this._forwardRenderer;
         if (!forwardRenderer || !camera) return null;
 
@@ -284,6 +289,7 @@ class GSplatQuadRenderer extends GSplatRenderer {
             // so pick.js does not declare/require the meshInstanceId uniform.
             this._pickMaterial.setDefine('GSPLAT_RENDER_ADDR_PASS', '');
             this._pickMaterial.setDefine('PICK_CUSTOM_ID', '');
+            this._pickMaterial.setDefine('{GSPLAT_PICK_EXCLUDE_CAPACITY}', PICK_EXCLUDE_CAPACITY);
 
             const colorStream = this.workBuffer.format.getStream('dataColor');
             if (colorStream && colorStream.format !== PIXELFORMAT_RGBA16U) {
@@ -323,6 +329,14 @@ class GSplatQuadRenderer extends GSplatRenderer {
         // Discard fragments below this alpha. Brush paint-out may lower it to
         // the visible-render threshold so faint selected splats remain pickable.
         this._pickMaterial.setParameter('alphaClip', alphaClip);
+        const excludeCount = excludeRanges.length / 2;
+        if (excludeCount > PICK_EXCLUDE_CAPACITY) {
+            throw new Error(`GSplatQuadRenderer: ${excludeCount} unpickable work-buffer ranges exceed the pick's capacity of ${PICK_EXCLUDE_CAPACITY}`);
+        }
+        const ranges = new Uint32Array(PICK_EXCLUDE_CAPACITY * 2);
+        ranges.set(excludeRanges);
+        this._pickMaterial.setParameter('pickExcludeRanges[0]', ranges);
+        this._pickMaterial.setParameter('pickExcludeCount', excludeCount);
         this._pickMaterial.update();
 
         // Match the forward mesh's instancing count (work-buffer slots / 128).

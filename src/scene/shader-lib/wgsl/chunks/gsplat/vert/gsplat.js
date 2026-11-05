@@ -18,6 +18,12 @@ const discardVec: vec4f = vec4f(0.0, 0.0, 2.0, 1.0);
     varying @interpolate(flat) vPickId: u32;
 #endif
 
+#if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
+    // work-buffer [start, end) ranges of splats the render-address pick skips
+    uniform pickExcludeRanges: array<vec2u, {GSPLAT_PICK_EXCLUDE_CAPACITY}>;
+    uniform pickExcludeCount: u32;
+#endif
+
 #ifdef GSPLAT_OVERDRAW
     uniform colorRampIntensity: f32;
     var colorRamp: texture_2d<f32>;
@@ -34,6 +40,16 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
         output.position = discardVec;
         return output;
     }
+
+    #if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
+        for (var i: u32 = 0u; i < uniform.pickExcludeCount; i = i + 1u) {
+            let excluded = uniform.pickExcludeRanges[i].element;
+            if (splat.index >= excluded.x && splat.index < excluded.y) {
+                output.position = discardVec;
+                return output;
+            }
+        }
+    #endif
 
     var modelCenter: vec3f = getCenter();
 

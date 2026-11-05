@@ -145,6 +145,14 @@ class GSplatPlacement {
     workBufferUpdate = WORKBUFFER_UPDATE_AUTO;
 
     /**
+     * Whether the raster CPU-sort render-address pick draws this placement's splats. Octree
+     * file placements read their parent placement's flag.
+     *
+     * @type {boolean}
+     */
+    pickable = true;
+
+    /**
      * Last seen format version for auto-detecting format changes.
      *
      * @private

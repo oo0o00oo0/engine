@@ -192,6 +192,14 @@ class GSplatInfo {
     getInstanceStreams = null;
 
     /**
+     * Function to get whether the source placement is pickable. Retrieved live (not
+     * snapshotted) so a change applies to the next pick.
+     *
+     * @type {() => boolean}
+     */
+    isPickable;
+
+    /**
      * Callback to consume render dirty flag from the source placement.
      *
      * @type {Function|null}
@@ -230,6 +238,7 @@ class GSplatInfo {
         this.parameters = placement.parameters;
         this.getWorkBufferModifier = () => placement.workBufferModifier;
         this.getInstanceStreams = () => placement.streams;
+        this.isPickable = () => (placement.parentPlacement ?? placement).pickable;
         this._consumeRenderDirty = consumeRenderDirty;
         this.octreeNodes = octreeNodes;
         this.nodeInfos = nodeInfos;

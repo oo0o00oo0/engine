@@ -35,6 +35,7 @@ const _properties = [
     'lodBaseDistance',
     'lodMultiplier',
     'castShadows',
+    'pickable',
     'material',
     'highQualitySH',
     'asset',

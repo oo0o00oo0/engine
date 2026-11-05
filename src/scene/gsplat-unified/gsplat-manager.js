@@ -574,7 +574,7 @@ class GSplatManager {
             // Executed immediately by the quad renderer; the resulting render target is stored
             // for pickRenderAddrSplatId to read back (with the WebGL2 Y-flip).
             const quadRenderer = /** @type {any} */ (this.renderer);
-            this._rasterPickRenderTarget = quadRenderer.prepareForPicking(camera, width, height, alphaClip) ?? null;
+            this._rasterPickRenderTarget = quadRenderer.prepareForPicking(camera, width, height, alphaClip, this._unpickableRanges()) ?? null;
             // No mesh instance to inject into the framework picker — this path renders itself.
             return null;
         }
@@ -584,6 +584,38 @@ class GSplatManager {
         /** @type {GSplatComputeLocalRenderer} */
         const localRenderer = /** @type {any} */ (this.renderer);
         return localRenderer.dispatchPick(camera, width, height, alphaClip);
+    }
+
+    /**
+     * Work-buffer [start, end) pairs, flattened, sorted and with adjacent or overlapping pairs
+     * merged, covering the splats of the sorted world state's placements that are not
+     * pickable. Mirrors {@link resolveRenderAddress}'s layout.
+     *
+     * @returns {number[]} The flattened ranges.
+     * @private
+     */
+    _unpickableRanges() {
+        const pairs = [];
+        for (const splat of this.worldStates.get(this.sortedVersion)?.splats ?? []) {
+            if (splat.isPickable()) continue;
+            const offsets = splat.intervalOffsets;
+            for (let i = 0; i < offsets.length; i++) {
+                const start = splat.intervals[i * 2];
+                const count = start === undefined ? splat.activeSplats : splat.intervals[i * 2 + 1] - start;
+                if (count > 0) pairs.push([offsets[i], offsets[i] + count]);
+            }
+        }
+        pairs.sort((a, b) => a[0] - b[0]);
+        const ranges = [];
+        for (const [start, end] of pairs) {
+            const last = ranges.length - 1;
+            if (last > 0 && start <= ranges[last]) {
+                ranges[last] = Math.max(ranges[last], end);
+            } else {
+                ranges.push(start, end);
+            }
+        }
+        return ranges;
     }
 
     /**

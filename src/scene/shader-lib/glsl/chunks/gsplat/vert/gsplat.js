@@ -18,6 +18,12 @@ mediump vec4 discardVec = vec4(0.0, 0.0, 2.0, 1.0);
     flat varying uint vPickId;
 #endif
 
+#if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
+    // work-buffer [start, end) ranges of splats the render-address pick skips
+    uniform uvec2 pickExcludeRanges[{GSPLAT_PICK_EXCLUDE_CAPACITY}];
+    uniform uint pickExcludeCount;
+#endif
+
 #ifdef GSPLAT_OVERDRAW
     uniform sampler2D colorRamp;
     uniform float colorRampIntensity;
@@ -30,6 +36,15 @@ void main(void) {
         gl_Position = discardVec;
         return;
     }
+
+    #if defined(GSPLAT_RENDER_ADDR_PASS) && defined(PICK_PASS)
+        for (uint i = 0u; i < pickExcludeCount; i++) {
+            if (splat.index >= pickExcludeRanges[i].x && splat.index < pickExcludeRanges[i].y) {
+                gl_Position = discardVec;
+                return;
+            }
+        }
+    #endif
 
     vec3 modelCenter = getCenter();
 
