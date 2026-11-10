@@ -1799,6 +1799,13 @@ class GSplatManager {
                     inst.updateLod(this.cameraNode, this.scene.gsplat);
                 }
             }
+
+            // the placements the LOD changes just made, a switch between loaded files among them, are taken up
+            // by this frame's world state, never left for a later update nothing may ask for
+            for (const [, inst] of this.octreeInstances) {
+                this.layerPlacementsDirty ||= inst.consumeModifiedPlacements();
+                this._placementSetChanged ||= inst.consumePlacementSetChanged();
+            }
         }
 
         // create new world state if needed

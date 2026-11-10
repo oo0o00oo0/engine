@@ -121,9 +121,22 @@ class SogParser {
 
     async loadTextures(url, callback, asset, meta) {
         // transform meta to latest shape
-        if (meta.version !== 2) {
+        if (meta?.version !== 2) {
             Debug.deprecated('Loading SOG v1 data which is deprecated. Please recompress your scene with latest tools.');
-            meta = upgradeMeta(meta);
+            try {
+                meta = upgradeMeta(meta);
+            } catch (err) {
+                callback(`Error reading gsplat meta: ${url.original} [${err}]`);
+                return;
+            }
+        }
+
+        // A manifest lacking a required texture fails the gsplat before any download
+        const named = sub => meta[sub]?.files?.length ?? 0;
+        if (named('means') < 2 || named('quats') < 1 || named('scales') < 1 || named('sh0') < 1 ||
+            (meta.shN && named('shN') < 2)) {
+            callback(`Error reading gsplat meta: ${url.original} [a required texture is not named]`);
+            return;
         }
 
         const { assets } = this.app;
@@ -215,45 +228,40 @@ class SogParser {
             return;
         }
 
-        // construct the gsplat resource
-        const data = new GSplatSogData();
-        data.url = url.original;
-        data.meta = meta;
-        data.numSplats = meta.count;
-        data.means_l = textures.means[0].resource;
-        data.means_u = textures.means[1].resource;
-        data.quats = textures.quats[0].resource;
-        data.scales = textures.scales[0].resource;
-        data.sh0 = textures.sh0[0].resource;
-        data.sh_centroids = textures.shN?.[0]?.resource;
-        data.sh_labels = textures.shN?.[1]?.resource;
-        data.featureColor = textures.featureColor?.[0]?.resource;
-        data.shBands = GSplatSogData.calcBands(data.sh_centroids?.width);
-
+        // Building the resource sits inside its completion: a fault fails the gsplat, its data and textures let go
         const decompress = asset.data?.decompress;
-
-        if (!decompress && this._shouldAbort(asset, unloaded)) {
-            data.destroy();
-            callback(null, null);
-            return;
-        }
-
-        // A fault preparing the resource fails the gsplat too, its data and textures let go, so its load ends heard
+        let data = null;
         let resource = null;
         try {
-            if (!decompress) {
-                // no need to prepare gpu data if decompressing
-                data.prepareCodebook();
-                await data.prepareGpuData();
-            }
+            data = new GSplatSogData();
+            data.url = url.original;
+            data.meta = meta;
+            data.numSplats = meta.count;
+            data.means_l = textures.means[0].resource;
+            data.means_u = textures.means[1].resource;
+            data.quats = textures.quats[0].resource;
+            data.scales = textures.scales[0].resource;
+            data.sh0 = textures.sh0[0].resource;
+            data.sh_centroids = textures.shN?.[0]?.resource;
+            data.sh_labels = textures.shN?.[1]?.resource;
+            data.featureColor = textures.featureColor?.[0]?.resource;
+            data.shBands = GSplatSogData.calcBands(data.sh_centroids?.width);
 
             if (!this._shouldAbort(asset, unloaded)) {
-                resource = decompress ?
-                    new GSplatResource(this.app.graphicsDevice, await data.decompress()) :
-                    new GSplatSogResource(this.app.graphicsDevice, data);
+                if (!decompress) {
+                    // no need to prepare gpu data if decompressing
+                    data.prepareCodebook();
+                    await data.prepareGpuData();
+                }
+
+                if (!this._shouldAbort(asset, unloaded)) {
+                    resource = decompress ?
+                        new GSplatResource(this.app.graphicsDevice, await data.decompress()) :
+                        new GSplatSogResource(this.app.graphicsDevice, data);
+                }
             }
         } catch (err) {
-            data.destroy();
+            data?.destroy();
             textureAssets.forEach((t) => {
                 assets.remove(t);
                 t.unload();

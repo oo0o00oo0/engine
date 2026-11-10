@@ -951,6 +951,15 @@ class GSplatOctreeInstance {
         }
 
         // check if any placements need LOD update
+        return this.consumeModifiedPlacements();
+    }
+
+    /**
+     * Consumes and returns whether any placement changed (its intervals or its file) since last call.
+     *
+     * @returns {boolean} True if placements were modified since last call.
+     */
+    consumeModifiedPlacements() {
         const dirty = this.dirtyModifiedPlacements;
         this.dirtyModifiedPlacements = false;
         return dirty;
