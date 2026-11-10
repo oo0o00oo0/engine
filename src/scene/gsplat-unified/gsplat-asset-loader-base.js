@@ -9,6 +9,14 @@ import { Debug } from '../../core/debug.js';
  */
 class GSplatAssetLoaderBase {
     /**
+     * The number of loads that have ended, landed or failed. A manager reading it takes each ended
+     * load up on its next full update, never polling the loader for it.
+     *
+     * @type {number}
+     */
+    settledCount = 0;
+
+    /**
      * Initiates loading of a gsplat asset. This is a fire-and-forget operation that starts
      * the loading process.
      *

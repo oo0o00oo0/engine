@@ -232,27 +232,41 @@ class SogParser {
 
         const decompress = asset.data?.decompress;
 
-        if (!decompress) {
-            if (this._shouldAbort(asset, unloaded)) {
-                data.destroy();
-                callback(null, null);
-                return;
-            }
-
-            // no need to prepare gpu data if decompressing
-            data.prepareCodebook();
-            await data.prepareGpuData();
-        }
-
-        if (this._shouldAbort(asset, unloaded)) {
+        if (!decompress && this._shouldAbort(asset, unloaded)) {
             data.destroy();
             callback(null, null);
             return;
         }
 
-        const resource = decompress ?
-            new GSplatResource(this.app.graphicsDevice, await data.decompress()) :
-            new GSplatSogResource(this.app.graphicsDevice, data);
+        // A fault preparing the resource fails the gsplat too, its data and textures let go, so its load ends heard
+        let resource = null;
+        try {
+            if (!decompress) {
+                // no need to prepare gpu data if decompressing
+                data.prepareCodebook();
+                await data.prepareGpuData();
+            }
+
+            if (!this._shouldAbort(asset, unloaded)) {
+                resource = decompress ?
+                    new GSplatResource(this.app.graphicsDevice, await data.decompress()) :
+                    new GSplatSogResource(this.app.graphicsDevice, data);
+            }
+        } catch (err) {
+            data.destroy();
+            textureAssets.forEach((t) => {
+                assets.remove(t);
+                t.unload();
+            });
+            callback(`Error preparing gsplat: ${url.original} [${err}]`);
+            return;
+        }
+
+        if (!resource) {
+            data.destroy();
+            callback(null, null);
+            return;
+        }
 
         ownedByResource = !decompress;
 

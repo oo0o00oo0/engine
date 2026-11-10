@@ -175,6 +175,13 @@ class GSplatOctreeInstance {
     needsLodUpdate = false;
 
     /**
+     * The octree loader's settled count as this instance last took its loads up.
+     *
+     * @private
+     */
+    _settledSeen = 0;
+
+    /**
      * Tracks prefetched file indices that are being loaded without active placements.
      * When any completes, we trigger LOD re-evaluation to allow promotion.
      *
@@ -856,7 +863,21 @@ class GSplatOctreeInstance {
      *
      * @returns {boolean} True if octree instance is dirty, false otherwise.
      */
+    /**
+     * Whether this instance asks for an update: loads ended since it last took them up, or its LOD
+     * is asked again.
+     *
+     * @returns {boolean} True if the instance wants an update.
+     */
+    wantsUpdate() {
+        return this.needsLodUpdate || this.placement.lodDirty ||
+            (this.octree.assetLoader?.settledCount ?? 0) !== this._settledSeen;
+    }
+
     update() {
+
+        // every load ended by now is taken up below
+        this._settledSeen = this.octree.assetLoader?.settledCount ?? 0;
 
         // Re-evaluate LODs when lodBaseDistance or lodMultiplier changed on the component
         if (this.placement.lodDirty) {

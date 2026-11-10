@@ -259,8 +259,13 @@ class GSplatManager {
      */
     _centersVersions = new Map();
 
-    /** @type {number} */
-    framesTillFullUpdate = 0;
+    /**
+     * Whether a full update is asked for and not yet run: kept until a frame with sorter capacity
+     * runs it, so nothing asked waits on a frame count.
+     *
+     * @private
+     */
+    _fullUpdateDemanded = true;
 
     /** @type {Vec3} */
     lastLodCameraPos = new Vec3(Infinity, Infinity, Infinity);
@@ -1502,6 +1507,23 @@ class GSplatManager {
     }
 
     /**
+     * Whether something asks for a full update: loads that ended, an instance whose LOD is asked
+     * again or that moved, the camera's pose past the LOD thresholds, or params awaiting one.
+     *
+     * @returns {boolean} True if a full update is wanted.
+     * @private
+     */
+    fullUpdateWanted() {
+        if (this.octreeInstances.size === 0) return false;
+        if (this._awaitingLodUpdate) return true;
+        const threshold = this.scene.gsplat.lodUpdateDistance;
+        for (const [, inst] of this.octreeInstances) {
+            if (inst.wantsUpdate() || inst.testMoved(threshold)) return true;
+        }
+        return this.testCameraMovedForLod();
+    }
+
+    /**
      * Fires the frame:ready event with current sorting and loading state.
      */
     fireFrameReadyEvent() {
@@ -1662,16 +1684,10 @@ class GSplatManager {
         // GPU sorting is always ready, CPU sorting is ready if not too many jobs in flight
         const sorterAvailable = this.activeRenderer !== GSPLAT_RENDERER_RASTER_CPU_SORT || (this.cpuSorter && this.cpuSorter.jobsInFlight < 3);
 
-        // full update every 10 frames
-        let fullUpdate = false;
-        this.framesTillFullUpdate--;
-        if (this.framesTillFullUpdate <= 0) {
-            this.framesTillFullUpdate = 10;
-
-            if (sorterAvailable) {
-                fullUpdate = true;
-            }
-        }
+        // a full update runs when asked for, on the first frame with sorter capacity
+        this._fullUpdateDemanded ||= this.fullUpdateWanted();
+        const fullUpdate = this._fullUpdateDemanded && sorterAvailable;
+        if (fullUpdate) this._fullUpdateDemanded = false;
 
         // when new octree instances are added, we need to evaluate their LOD immediately
         const hasNewInstances = this.hasNewOctreeInstances && sorterAvailable;

@@ -205,6 +205,8 @@ class GSplatAssetLoader extends GSplatAssetLoaderBase {
             return;
         }
 
+        this.settledCount++;
+
         // Remove from currently loading
         this._currentlyLoading.delete(url);
 
@@ -235,17 +237,25 @@ class GSplatAssetLoader extends GSplatAssetLoaderBase {
             // Increment retry count
             this._retryCount.set(url, retryCount + 1);
 
-            // Reset asset state for retry
-            asset.loaded = false;
-            asset.loading = false;
+            // Retry once the failed request's dispatch has ended, so the attempt is a request of its own, never a
+            // callback on the one failing; its error is heard too, so a file that keeps failing ends failed
+            queueMicrotask(() => {
+                if (this._destroyed || !this._canLoad() || this._urlToAsset.get(url) !== asset) {
+                    return;
+                }
 
-            // Retry loading, hearing this attempt's error too, so a file that keeps failing ends failed, never loading
-            Debug.warn(`GSplatAssetLoader: Retrying load for ${url} (attempt ${retryCount + 1}/${this.maxRetries})`);
-            asset.once('error', retryErr => this._onAssetLoadError(url, asset, retryErr));
-            this._registry.load(asset);
+                // Reset asset state for retry
+                asset.loaded = false;
+                asset.loading = false;
+
+                Debug.warn(`GSplatAssetLoader: Retrying load for ${url} (attempt ${retryCount + 1}/${this.maxRetries})`);
+                asset.once('error', retryErr => this._onAssetLoadError(url, asset, retryErr));
+                this._registry.load(asset);
+            });
         } else {
             // Max retries exceeded
             Debug.error(`GSplatAssetLoader: Failed to load ${url} after ${this.maxRetries} retries: ${err}`);
+            this.settledCount++;
 
             // Remove from currently loading
             this._currentlyLoading.delete(url);
