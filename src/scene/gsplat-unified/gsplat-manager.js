@@ -1841,6 +1841,7 @@ class GSplatManager {
         // kick off sorting / compaction only if needed
         let gpuSortedThisFrame = false;
         if (this.sortNeeded && lastState) {
+            let sortRequested = true;
             if (this.activeRenderer === GSPLAT_RENDERER_COMPUTE) {
                 // Compute renderer: run compaction only (no key generation or radix sort)
                 this.compactGpu(lastState);
@@ -1854,17 +1855,22 @@ class GSplatManager {
                 gpuSortedThisFrame = true;
             } else {
                 // CPU sort just posts to the worker — indirect draw still needs updating below
-                this.sortCpu(lastState);
+                sortRequested = this.sortCpu(lastState);
             }
-            this.sortNeeded = false;
 
-            // Update camera tracking for next sort check
-            this.lastSortCameraPos.copy(this.cameraNode.getPosition());
-            this.lastSortCameraFwd.copy(this.cameraNode.forward);
+            // A sort the worker declined stays needed, asked again on a frame after its running job lands,
+            // so the last camera's sort is never lost
+            if (sortRequested) {
+                this.sortNeeded = false;
 
-            // Sort implies culling was also processed, so update culling trackers too
-            this.lastCullingCameraFwd.copy(this.cameraNode.forward);
-            this.lastCullingProjMat.copy(this.cameraNode.camera.projectionMatrix);
+                // Update camera tracking for next sort check
+                this.lastSortCameraPos.copy(this.cameraNode.getPosition());
+                this.lastSortCameraFwd.copy(this.cameraNode.forward);
+
+                // Sort implies culling was also processed, so update culling trackers too
+                this.lastCullingCameraFwd.copy(this.cameraNode.forward);
+                this.lastCullingProjMat.copy(this.cameraNode.camera.projectionMatrix);
+            }
         }
 
         // Hybrid raster needs projector + radix + fresh indirect args every frame (indirect
@@ -2371,10 +2377,12 @@ class GSplatManager {
      * Sorts the splats using CPU worker (asynchronous).
      *
      * @param {GSplatWorldState} lastState - The last world state.
+     * @returns {boolean} True if the sort was sent to the worker, false if the worker declined it
+     * while a job of the same version runs.
      */
     sortCpu(lastState) {
         Debug.assert(this.cpuSorter, 'CPU sorter not initialized');
-        if (!this.cpuSorter) return;
+        if (!this.cpuSorter) return true;
 
         // Get camera's world-space properties
         const cameraNode = this.cameraNode;
@@ -2417,7 +2425,7 @@ class GSplatManager {
             });
         });
 
-        this.cpuSorter.setSortParams(sorterRequest, this.scene.gsplat.radialSorting);
+        return this.cpuSorter.setSortParams(sorterRequest, this.scene.gsplat.radialSorting);
     }
 
     /**

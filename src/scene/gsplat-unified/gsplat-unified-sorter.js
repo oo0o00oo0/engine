@@ -215,6 +215,8 @@ class GSplatUnifiedSorter extends EventHandler {
      *
      * @param {object} params - The sorting parameters - per-splat directions, offsets, scales, AABBs.
      * @param {boolean} radialSorting - Whether to use radial distance sorting.
+     * @returns {boolean} True if the job was sent, false if it was declined while a job of the same
+     * version is in flight.
      */
     setSortParams(params, radialSorting) {
 
@@ -240,7 +242,9 @@ class GSplatUnifiedSorter extends EventHandler {
             }, [
                 orderData.buffer
             ]);
+            return true;
         }
+        return false;
     }
 }
 

@@ -192,7 +192,7 @@ class SogParser {
         textureAssets.forEach(t => assets.load(t));
 
         // wait for all textures to complete loading
-        await Promise.allSettled(promises);
+        const results = await Promise.allSettled(promises);
 
         if (this._shouldAbort(asset, unloaded)) {
             // Clean up texture assets that were created during the async load
@@ -201,6 +201,17 @@ class SogParser {
                 t.unload();
             });
             callback(null, null);
+            return;
+        }
+
+        // A texture that failed fails the gsplat, never a resource made without it
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed) {
+            textureAssets.forEach((t) => {
+                assets.remove(t);
+                t.unload();
+            });
+            callback(`Error loading gsplat texture: ${url.original} [${failed.reason}]`);
             return;
         }
 

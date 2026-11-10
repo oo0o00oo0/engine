@@ -239,8 +239,9 @@ class GSplatAssetLoader extends GSplatAssetLoaderBase {
             asset.loaded = false;
             asset.loading = false;
 
-            // Retry loading
+            // Retry loading, hearing this attempt's error too, so a file that keeps failing ends failed, never loading
             Debug.warn(`GSplatAssetLoader: Retrying load for ${url} (attempt ${retryCount + 1}/${this.maxRetries})`);
+            asset.once('error', retryErr => this._onAssetLoadError(url, asset, retryErr));
             this._registry.load(asset);
         } else {
             // Max retries exceeded

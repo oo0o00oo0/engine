@@ -238,9 +238,20 @@ class SogBundleParser {
 
             Object.values(textures).forEach(t => this.app.assets.load(t));
 
-            await Promise.allSettled(promises);
+            const results = await Promise.allSettled(promises);
 
             const { assets } = this.app;
+
+            // A texture that failed fails the gsplat, never a resource made without it
+            const failed = results.find(result => result.status === 'rejected');
+            if (failed) {
+                Object.values(textures).forEach((t) => {
+                    assets.remove(t);
+                    t.unload();
+                });
+                callback(`Error loading gsplat texture: ${url.original} [${failed.reason}]`);
+                return;
+            }
 
             // Compressed SOG resources retain the texture resources and release
             // them through their own ref-counted lifetime. Until that ownership
