@@ -886,6 +886,27 @@ class WebglTexture {
         return device.readTextureAsync(texture, x, y, width, height, options);
     }
 
+    writeRegion(x, y, width, height, data) {
+        const { texture } = this;
+        /** @type {WebglGraphicsDevice} */
+        const device = texture.device;
+        const gl = device.gl;
+
+        // create the texture and upload any pending level whole first, then bind it on the active unit
+        device.setTexture(texture, 0);
+        device.activeTexture(0);
+        device.bindTexture(texture);
+
+        const { unpackFlipY, unpackPremultiplyAlpha, unpackAlignment } = device;
+        device.setUnpackFlipY(false);
+        device.setUnpackPremultiplyAlpha(false);
+        device.setUnpackAlignment(1);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, width, height, this._glFormat, this._glPixelType, data);
+        device.setUnpackFlipY(unpackFlipY);
+        device.setUnpackPremultiplyAlpha(unpackPremultiplyAlpha);
+        device.setUnpackAlignment(unpackAlignment);
+    }
+
     write(x, y, width, height, data) {
         const { texture } = this;
         const { device } = texture;

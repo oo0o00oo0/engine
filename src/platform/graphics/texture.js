@@ -1269,6 +1269,26 @@ class Texture {
     }
 
     /**
+     * Writes a region of the texture's top level to the GPU at once, from CPU data. The data is
+     * the region's alone, row after row. The texture's own levels are left as they are: a caller
+     * that keeps them as the texture's source writes the same data into them, so a restored
+     * context uploads them whole.
+     *
+     * @param {number} x - The left edge of the region.
+     * @param {number} y - The top edge of the region.
+     * @param {number} width - The width of the region.
+     * @param {number} height - The height of the region.
+     * @param {Uint8Array|Uint16Array|Uint32Array|Float32Array} data - The region's texels.
+     * @returns {boolean} Whether the device wrote it: false where its textures write no region.
+     * @ignore
+     */
+    writeRegion(x, y, width, height, data) {
+        if (!this.impl.writeRegion) return false;
+        this.impl.writeRegion(x, y, width, height, data);
+        return true;
+    }
+
+    /**
      * Creates a TextureView for this texture, specifying a subset of mip levels and array layers.
      * TextureViews can be used with compute shaders to access specific portions of a texture.
      *
